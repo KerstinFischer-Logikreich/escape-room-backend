@@ -13,6 +13,14 @@ app.use(cors());
 app.use(bodyParser.json());
 
 // SQLite-Datenbank öffnen (erstellt Datei, falls nicht vorhanden)
+const fs = require('fs');
+
+const dbFile = 'escape.db';
+if (fs.existsSync(dbFile)) {
+  fs.unlinkSync(dbFile); // löscht alte DB beim Serverstart
+  console.log('Alte DB gelöscht.');
+}
+
 const db = new sqlite3.Database('escape.db', (err) => {
   if (err) console.error('Datenbankfehler:', err.message);
   else console.log('Datenbank geöffnet.');
