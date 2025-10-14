@@ -116,6 +116,7 @@ app.post('/add-slot', (req, res) => {
 });
 
 // ----------- Endpoint: Buchung anlegen -----------
+// ----------- Endpoint: Buchung anlegen -----------
 app.post('/bookings', (req, res) => {
   const { room, date, start_time, end_time, name, email, phone, persons } = req.body;
   if (!room || !date || !start_time || !end_time || !name || !email) {
@@ -134,14 +135,23 @@ app.post('/bookings', (req, res) => {
         `INSERT INTO bookings (room,date,start_time,end_time,name,email,phone,persons)
          VALUES (?,?,?,?,?,?,?,?)`,
         [room, date, start_time, end_time, name, email, phone, persons],
-        function(err2){
-          if(err2) return res.status(500).json({ error: err2.message });
+        async function (err2) {
+          if (err2) return res.status(500).json({ error: err2.message });
+
+          // Google Calendar hinzufügen
+          try {
+            await addBookingToCalendar({ room, start_time, end_time, name, email });
+          } catch (calErr) {
+            console.error('Fehler beim Kalender-Import:', calErr.message);
+          }
+
           res.json({ success: true, booking_id: this.lastID });
         }
       );
     }
   );
 });
+
 
 // ----------- Optional: Alle Buchungen abrufen -----------
 app.get('/bookings', (req,res)=>{
