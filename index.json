@@ -1,0 +1,303 @@
+require('dotenv').config();
+const express = require('express');
+const bodyParser = require('body-parser');
+const cors = require('cors');
+const { google } = require('googleapis');
+const nodemailer = require('nodemailer');
+const knexLib = require('knex');
+const path = require('path');
+
+const app = express();
+app.use(cors());
+app.use(bodyParser.json());
+
+// ----- DB (SQLite via knex) -----
+const knex = knexLib({
+  client: 'sqlite3',
+  connection: {
+    filename: path.join(__dirname, 'data.sqlite')
+  },
+  useNullAsDefault: true
+});
+
+// create tables if not exist
+(async () => {
+  await knex.schema.hasTable('bookings').then(async (exists) => {
+    if (!exists) {
+      await knex.schema.createTable('bookings', (t) => {
+        t.increments('id').primary();
+        t.string('customer_name');
+        t.string('customer_email');
+        t.datetime('start'); // ISO
+        t.integer('duration_min'); // 90
+        t.string('room').defaultTo('Room 1');
+        t.integer('persons').defaultTo(2);
+        t.timestamp('created_at').defaultTo(knex.fn.now());
+      });
+    }
+  });
+
+  await knex.schema.hasTable('manual_slots').then(async (exists) => {
+    if (!exists) {
+      await knex.schema.createTable('manual_slots', (t) => {
+        t.increments('id').primary();
+        t.datetime('start');
+        t.integer('duration_min').defaultTo(90);
+        t.string('note').nullable();
+        t.timestamp('created_at').defaultTo(knex.fn.now());
+      });
+    }
+  });
+})();
+
+// ----- Config / helpers -----
+const SLOT_DURATION_MIN = 90;
+const TIMEZONE = process.env.TIMEZONE || 'Europe/Berlin'; // important for Google Calendar
+
+function parseISODateOnly(s) {
+  // s expected YYYY-MM-DD
+  const [y,m,d] = s.split('-').map(Number);
+  return new Date(Date.UTC(y, m-1, d)); // treat as UTC midnight then we'll adjust local times when generating slots
+}
+
+function addMinutes(date, mins) {
+  return new Date(date.getTime() + mins*60000);
+}
+
+function toIsoStringLocal(date) {
+  // return ISO in local timezone (no 'Z'), e.g. 2025-10-13T10:00:00
+  const pad = (n) => String(n).padStart(2,'0');
+  return `${date.getFullYear()}-${pad(date.getMonth()+1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}:00`;
+}
+
+function dateIsWeekend(dt) {
+  const d = dt.getDay(); // 0=Sun,6=Sat
+  return d===0 || d===6;
+}
+
+// Generate default weekend slots for a given date (if weekend)
+function generateWeekendSlotsForDate(date) {
+  // date is Date object in local timezone (we will assume server runs in Europe/Berlin or use TZ adjustments)
+  // if Saturday or Sunday generate starts 10:00..18:30 every 90min
+  if (!dateIsWeekend(date)) return [];
+  const slots = [];
+  const year = date.getFullYear(), month = date.getMonth(), day = date.getDate();
+  let start = new Date(year, month, day, 10, 0, 0); // local time
+  const lastStart = new Date(year, month, day, 18, 30, 0);
+  while (start <= lastStart) {
+    slots.push(new Date(start));
+    start = addMinutes(start, SLOT_DURATION_MIN);
+  }
+  return slots;
+}
+
+// ----- Google Calendar setup (service account or OAuth credentials) -----
+let calendarClient = null;
+async function initGoogleCalendar() {
+  if (!process.env.GOOGLE_CLIENT_EMAIL || !process.env.GOOGLE_PRIVATE_KEY || !process.env.GOOGLE_CALENDAR_ID) {
+    console.log('Google Calendar not configured (GOOGLE_CLIENT_EMAIL / GOOGLE_PRIVATE_KEY / GOOGLE_CALENDAR_ID missing).');
+    return null;
+  }
+  const jwtClient = new google.auth.JWT(
+    process.env.GOOGLE_CLIENT_EMAIL,
+    null,
+    (process.env.GOOGLE_PRIVATE_KEY || '').replace(/\\n/g, '\n'),
+    ['https://www.googleapis.com/auth/calendar']
+  );
+  await jwtClient.authorize();
+  calendarClient = google.calendar({ version: 'v3', auth: jwtClient });
+}
+initGoogleCalendar();
+
+// ----- Email (nodemailer) -----
+let transporter = null;
+if (process.env.SMTP_HOST && process.env.SMTP_USER) {
+  transporter = nodemailer.createTransport({
+    host: process.env.SMTP_HOST,
+    port: parseInt(process.env.SMTP_PORT || '587'),
+    secure: (process.env.SMTP_SECURE === 'true'),
+    auth: {
+      user: process.env.SMTP_USER,
+      pass: process.env.SMTP_PASS
+    }
+  });
+} else {
+  console.log('SMTP not configured; no emails will be sent until SMTP_* env vars are set.');
+}
+
+// ----- API: get available slots for date -----
+app.get('/slots', async (req, res) => {
+  try {
+    const dateStr = req.query.date; // YYYY-MM-DD
+    if (!dateStr) return res.status(400).json({ error: 'date query required YYYY-MM-DD' });
+    // generate date object in server local timezone
+    const [y,m,d] = dateStr.split('-').map(Number);
+    const date = new Date(y, m-1, d, 0,0,0);
+
+    // 1) weekend slots
+    const weekendSlots = generateWeekendSlotsForDate(date); // Date objects
+
+    // 2) manual slots from DB that are on this date
+    const manualRows = await knex('manual_slots').whereRaw("date(start) = ?", [dateStr]).select();
+    const manualSlots = manualRows.map(r => new Date(r.start));
+
+    // combine and dedupe times (strings)
+    const slotMap = new Map();
+    [...weekendSlots, ...manualSlots].forEach(dt => {
+      const key = toIsoStringLocal(dt);
+      if (!slotMap.has(key)) slotMap.set(key, { start: dt, source: 'auto' });
+    });
+
+    // 3) remove ones already booked
+    const bookings = await knex('bookings').whereRaw("date(start) = ?", [dateStr]).select();
+    const bookedStarts = new Set(bookings.map(b => {
+      const dt = new Date(b.start);
+      return toIsoStringLocal(dt);
+    }));
+
+    const available = [];
+    for (const [k, v] of slotMap.entries()) {
+      if (!bookedStarts.has(k)) {
+        available.push({ start: k, duration_min: SLOT_DURATION_MIN });
+      }
+    }
+
+    // sort by time
+    available.sort((a,b) => a.start.localeCompare(b.start));
+    res.json({ date: dateStr, slots: available });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'server error' });
+  }
+});
+
+// ----- API: create booking -----
+app.post('/book', async (req, res) => {
+  try {
+    const { customer_name, customer_email, start, persons } = req.body;
+    if (!customer_name || !customer_email || !start) {
+      return res.status(400).json({ error: 'required: customer_name, customer_email, start (YYYY-MM-DDTHH:mm:ss)' });
+    }
+    const startDate = new Date(start);
+    // verify slot is available (check if start exists in generated+manual)
+    const dateOnly = start.split('T')[0];
+    // reuse /slots logic
+    const resp = await (async () => {
+      // call DB directly like above
+      const [y,m,d] = dateOnly.split('-').map(Number);
+      const date = new Date(y,m-1,d,0,0,0);
+      const weekendSlots = generateWeekendSlotsForDate(date).map(dt => toIsoStringLocal(dt));
+      const manualRows = await knex('manual_slots').whereRaw("date(start) = ?", [dateOnly]).select();
+      const manualSlots = manualRows.map(r => {
+        return toIsoStringLocal(new Date(r.start));
+      });
+      const combined = new Set([...weekendSlots, ...manualSlots]);
+      return Array.from(combined);
+    })();
+
+    if (!resp.includes(start)) {
+      return res.status(400).json({ error: 'Slot not available (not a valid slot or not offered).' });
+    }
+
+    // check not already booked
+    const existing = await knex('bookings').where({ start }).first();
+    if (existing) return res.status(400).json({ error: 'Slot already booked.' });
+
+    // insert booking
+    const [id] = await knex('bookings').insert({
+      customer_name, customer_email, start, duration_min: SLOT_DURATION_MIN, persons: persons || 2
+    });
+
+    // add to Google Calendar if configured
+    if (calendarClient) {
+      try {
+        const startDateObj = new Date(start);
+        const endDateObj = addMinutes(startDateObj, SLOT_DURATION_MIN);
+        await calendarClient.events.insert({
+          calendarId: process.env.GOOGLE_CALENDAR_ID,
+          requestBody: {
+            summary: `Escape Room: ${customer_name}`,
+            description: `Buchung durch ${customer_name} (${customer_email}) — Personen: ${persons || 2}`,
+            start: {
+              dateTime: startDateObj.toISOString(),
+              timeZone: TIMEZONE
+            },
+            end: {
+              dateTime: endDateObj.toISOString(),
+              timeZone: TIMEZONE
+            }
+          }
+        });
+      } catch (gErr) {
+        console.error('Google Calendar error:', gErr);
+        // do not fail the booking — just warn
+      }
+    }
+
+    // send confirmation email
+    if (transporter) {
+      const mailOptions = {
+        from: process.env.EMAIL_FROM || process.env.SMTP_USER,
+        to: `${customer_email}`,
+        subject: `Bestätigung: Escape Room Buchung ${start}`,
+        text: `Hallo ${customer_name},\n\ndanke für deine Reservierung. Dein Termin: ${start} (Dauer ${SLOT_DURATION_MIN} Minuten).\n\nViele Grüße\nEscape Room Team`
+      };
+      transporter.sendMail(mailOptions).catch(err => console.error('Mail send error', err));
+      // send copy to owner
+      const ownerMail = process.env.OWNER_EMAIL;
+      if (ownerMail) {
+        transporter.sendMail({
+          from: process.env.EMAIL_FROM || process.env.SMTP_USER,
+          to: ownerMail,
+          subject: `Neue Buchung: ${customer_name} ${start}`,
+          text: `Neue Buchung:\nName: ${customer_name}\nE-Mail: ${customer_email}\nStart: ${start}\nPersonen: ${persons || 2}\nID: ${id}`
+        }).catch(e => console.error('owner mail err', e));
+      }
+    }
+
+    res.json({ success: true, id });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'server error' });
+  }
+});
+
+// ----- Admin endpoints (simple password auth via header X-ADMIN-PASS) -----
+function requireAdmin(req, res, next) {
+  const pass = req.headers['x-admin-pass'] || req.query.admin_pass;
+  if (!pass || pass !== (process.env.ADMIN_PASS || 'changeme')) {
+    return res.status(401).json({ error: 'unauthorized' });
+  }
+  next();
+}
+
+app.get('/bookings', requireAdmin, async (req, res) => {
+  const rows = await knex('bookings').orderBy('start','asc').select();
+  res.json(rows);
+});
+
+app.get('/manual-slots', requireAdmin, async (req, res) => {
+  const rows = await knex('manual_slots').orderBy('start','asc').select();
+  res.json(rows);
+});
+
+app.post('/manual-slots', requireAdmin, async (req, res) => {
+  const { start, note } = req.body;
+  if (!start) return res.status(400).json({ error: 'start required (YYYY-MM-DDTHH:mm)' });
+  const [id] = await knex('manual_slots').insert({ start, note });
+  res.json({ id });
+});
+
+app.delete('/manual-slots/:id', requireAdmin, async (req, res) => {
+  const { id } = req.params;
+  await knex('manual_slots').where({ id }).del();
+  res.json({ success: true });
+});
+
+// health
+app.get('/ping', (req,res) => res.json({ ok: true }));
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`Booking backend listening on ${PORT}`);
+});
