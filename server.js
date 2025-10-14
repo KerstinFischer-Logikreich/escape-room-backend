@@ -1,7 +1,5 @@
 const express = require('express');
 const cors = require('cors');
-const sqlite3 = require('sqlite3');
-const path = require('path');
 require('dotenv').config();
 
 const app = express();
@@ -9,6 +7,24 @@ app.use(cors());
 app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
+
+// Beispiel-Daten
+let manualSlots = [];
+
+// Admin-Route: GET /manual-slots
+app.get('/manual-slots', (req, res) => {
+  const adminPass = req.header('X-ADMIN-PASS');
+  if (adminPass !== process.env.ADMIN_PASS) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  res.json(manualSlots);
+});
+
+// Server starten
+app.listen(PORT, () => {
+  console.log(`Server läuft auf Port ${PORT}`);
+});
+
 const ADMIN_PASS = process.env.ADMIN_PASS || 'KerstinFischer-Logikreich';
 
 // --- Datenbank ---
