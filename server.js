@@ -8,6 +8,33 @@ const path = require('path');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+const { google } = require('googleapis');
+const calendar = google.calendar('v3');
+
+const auth = new google.auth.GoogleAuth({
+  keyFile: 'escaperoombooking-6fedddd3ad2a.json', // dein heruntergeladener Schlüssel
+  scopes: ['https://www.googleapis.com/auth/calendar']
+});
+
+async function addBookingToCalendar({ room, start_time, end_time, name, email }) {
+  const authClient = await auth.getClient();
+  const calendarId = 'DEIN_KALENDER_ID@group.calendar.google.com';
+
+  const event = {
+    summary: `Escape Room: ${room}`,
+    description: `Buchung von ${name}, Email: ${email}`,
+    start: { dateTime: start_time },
+    end: { dateTime: end_time }
+  };
+
+  return calendar.events.insert({
+    auth: authClient,
+    calendarId,
+    requestBody: event
+  });
+}
+
+
 // Middleware
 app.use(cors());
 app.use(bodyParser.json());
@@ -123,6 +150,8 @@ app.get('/bookings', (req,res)=>{
     res.json({ bookings: rows });
   });
 });
+
+await addBookingToCalendar({ room, start_time, end_time, name, email });
 
 // Server starten
 app.listen(PORT, () => {
