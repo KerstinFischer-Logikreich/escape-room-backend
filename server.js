@@ -3,6 +3,7 @@ const express = require('express');
 const cors = require('cors');
 const sqlite3 = require('sqlite3').verbose();
 const bodyParser = require('body-parser');
+const path = require('path');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -56,6 +57,27 @@ app.get('/slots', (req, res) => {
       res.json({ slots: rows });
     }
   );
+});
+
+// ----------- Admin-Seite bereitstellen -----------
+app.get('/admin', (req, res) => {
+  res.sendFile(path.join(__dirname, 'admin.html'));
+});
+
+// ----------- Endpoint: Slot hinzufügen (Admin) -----------
+app.post('/add-slot', (req, res) => {
+  const { room, date, start_time, duration_min } = req.body;
+
+  if (!room || !date || !start_time || !duration_min) {
+    return res.json({ error: 'Bitte alle Felder ausfüllen' });
+  }
+
+  // booked wird automatisch auf 0 gesetzt, id AUTOINCREMENT
+  const sql = 'INSERT INTO manual_slots (room, date, start_time, duration_min) VALUES (?,?,?,?)';
+  db.run(sql, [room, date, start_time, duration_min], function(err) {
+    if (err) return res.json({ error: err.message });
+    res.json({ success: true, id: this.lastID });
+  });
 });
 
 // ----------- Endpoint: Buchung anlegen -----------
