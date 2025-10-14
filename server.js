@@ -116,7 +116,6 @@ app.post('/add-slot', (req, res) => {
 });
 
 // ----------- Endpoint: Buchung anlegen -----------
-// ----------- Endpoint: Buchung anlegen -----------
 app.post('/bookings', (req, res) => {
   const { room, date, start_time, end_time, name, email, phone, persons } = req.body;
   if (!room || !date || !start_time || !end_time || !name || !email) {
@@ -160,8 +159,6 @@ app.get('/bookings', (req,res)=>{
     res.json({ bookings: rows });
   });
 });
-
-await addBookingToCalendar({ room, start_time, end_time, name, email });
 
 // Server starten
 app.listen(PORT, () => {
