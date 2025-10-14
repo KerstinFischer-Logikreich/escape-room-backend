@@ -1,39 +1,91 @@
-bookBtn.addEventListener('click', async () => {
-  const room = document.getElementById('room').value;
-  const date = document.getElementById('date').value;
-  const start_time = document.getElementById('start_time').value;
-  const duration_min = parseInt(document.getElementById('duration_min').value, 10);
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Escape Room Admin</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; background: #f9f9f9; }
+    h1 { color: #2563eb; }
+    label { display: block; margin: 10px 0 4px; }
+    input, select { padding: 8px; width: 200px; margin-bottom: 10px; }
+    button { padding: 8px 12px; margin-top: 10px; background: #2563eb; color: #fff; border: none; cursor: pointer; }
+    button:hover { background: #1d4ed8; }
+    #msg { margin-top: 12px; font-weight: bold; }
+  </style>
+</head>
+<body>
 
-  if (!room || !date || !start_time || !duration_min) {
-    msg.style.color = 'red';
-    msg.textContent = 'Bitte alle Felder ausfüllen.';
-    return;
-  }
+  <h1>Escape Room Admin – Slot hinzufügen</h1>
 
-  try {
-    const res = await fetch('/add-slot', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        room,
-        date,
-        start_time: date + 'T' + start_time + ':00', // ISO-Format
-        duration_min
-      })
+  <form id="slotForm">
+    <label for="room">Raum:</label>
+    <select id="room" required>
+      <option value="Raum A">Raum A</option>
+      <option value="Raum B">Raum B</option>
+      <option value="Raum C">Raum C</option>
+    </select>
+
+    <label for="date">Datum:</label>
+    <input type="date" id="date" required>
+
+    <label for="start_time">Startzeit (HH:MM):</label>
+    <input type="time" id="start_time" required>
+
+    <label for="duration_min">Dauer (Minuten):</label>
+    <input type="number" id="duration_min" value="90" min="30" required>
+
+    <button type="submit">Slot hinzufügen</button>
+  </form>
+
+  <div id="msg"></div>
+
+  <script>
+    const form = document.getElementById('slotForm');
+    const msg = document.getElementById('msg');
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+
+      const room = document.getElementById('room').value;
+      const date = document.getElementById('date').value;
+      const start_time = document.getElementById('start_time').value;
+      const duration_min = parseInt(document.getElementById('duration_min').value, 10);
+
+      if (!room || !date || !start_time || !duration_min) {
+        msg.style.color = 'red';
+        msg.textContent = 'Bitte alle Felder ausfüllen.';
+        return;
+      }
+
+      try {
+        const res = await fetch('/add-slot', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            room,
+            date,
+            start_time: date + 'T' + start_time + ':00',
+            duration_min
+          })
+        });
+
+        const data = await res.json();
+        if (data.success) {
+          msg.style.color = 'green';
+          msg.textContent = `Slot erfolgreich hinzugefügt (ID ${data.id})`;
+          form.reset();
+        } else {
+          msg.style.color = 'red';
+          msg.textContent = data.error || 'Fehler beim Hinzufügen';
+        }
+      } catch (err) {
+        console.error(err);
+        msg.style.color = 'red';
+        msg.textContent = 'Serverfehler';
+      }
     });
+  </script>
 
-    const j = await res.json();
-    if (j.success) {
-      msg.style.color = 'green';
-      msg.textContent = 'Slot erfolgreich hinzugefügt (ID ' + j.id + ')';
-      form.reset();
-    } else {
-      msg.style.color = 'red';
-      msg.textContent = j.error || 'Fehler beim Hinzufügen';
-    }
-  } catch (e) {
-    console.error(e);
-    msg.style.color = 'red';
-    msg.textContent = 'Serverfehler';
-  }
-});
+</body>
+</html>
