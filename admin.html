@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <title>Escape Room Admin</title>
+</head>
+<body>
+  <h1>Escape Room Admin Panel</h1>
+
+  <!-- Login -->
+  <label>Admin-Passwort:
+    <input type="password" id="admin-pass">
+  </label>
+  <button id="login-btn">Login</button>
+
+  <h2>Manuelle Slots</h2>
+  <ul id="slot-list"></ul>
+
+  <!-- Neuen Slot hinzufügen -->
+  <h3>Neuen Slot anlegen</h3>
+  <input type="date" id="date">
+  <input type="time" id="start-time">
+  <input type="time" id="end-time">
+  <input type="text" id="room" placeholder="Raum">
+  <button id="add-slot-btn">Hinzufügen</button>
+
+  <!-- Wochenend-Slots generieren -->
+  <h3>Wochenend-Slots automatisch anlegen</h3>
+  <label>Von Datum: <input type="date" id="start-weekend"></label>
+  <label>Bis Datum: <input type="date" id="end-weekend"></label>
+  <button id="generate-weekend-slots">Generieren</button>
+
+  <script>
+    const BACKEND_BASE = 'https://escape-room-backend-gkmc.onrender.com';
+    let ADMIN_PASS = '';
+
+    // Login
+    document.getElementById('login-btn').addEventListener('click', () => {
+      ADMIN_PASS = document.getElementById('admin-pass').value;
+      loadSlots();
+    });
+
+    // Slots laden
+    async function loadSlots() {
+      const res = await fetch(`${BACKEND_BASE}/manual-slots`, {
+        headers: { 'X-ADMIN-PASS': ADMIN_PASS }
+      });
+      if (!res.ok) {
+        alert('Login fehlgeschlagen');
+        return;
+      }
+      const slots = await res.json();
+      const list = document.getElementById('slot-list');
+      list.innerHTML = '';
+      slots.forEach(slot => {
+        const li = document.createElement('li');
+        li.textContent = `${slot.date} ${slot.start_time}-${slot.end_time} ${slot.room}`;
+
+        // Löschen-Button
+        const deleteBtn = document.createElement('button');
+        deleteBtn.textContent = 'Löschen';
+        deleteBtn.style.marginLeft = '10px';
+        deleteBtn.onclick = async () => {
+          const delRes = await fetch(`${BACKEND_BASE}/manual-slots/${slot.id}`, {
+            method: 'DELETE',
+            headers: { 'X-ADMIN-PASS': ADMIN_PASS }
+          });
+          if (delRes.ok) loadSlots();
+          else alert('Fehler beim Löschen');
+        };
+        li.appendChild(deleteBtn);
+        list.appendChild(li);
+      });
+    }
+
+    // Neuen Slot anlegen
+    document.getElementById('add-slot-btn').addEventListener('click', async () => {
+      const date = document.getElementById('date').value;
+      const start_time = document.getElementById('start-time').value;
+      const end_time = document.getElementById('end-time').value;
+      const room = document.getElementById('room').value;
+
+      if (!date || !start_time || !end_time || !room) {
+        alert('Bitte alle Felder ausfüllen');
+        return;
+      }
+
+      const res = await fetch(`${BACKEND_BASE}/manual-slots`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-ADMIN-PASS': ADMIN_PASS
+        },
+        body: JSON.stringify({ date, start_time, end_time, room })
+      });
+
+      if (res.ok) {
+        document.getElementById('date').value = '';
+        document.getElementById('start-time').value = '';
+        document.getElementById('end-time').value = '';
+        document.getElementById('room').value = '';
+        loadSlots();
+      } else {
+        alert('Fehler beim Anlegen des Slots');
+      }
+    });
+
+    // Wochenend-Slots generieren
+    document.getElementById('generate-weekend-slots').addEventListener('click', async () => {
+      const startDate = new Date(document.getElementById('start-weekend').value);
+      const endDate = new Date(document.getElementById('end-weekend').value);
+
+      if (!startDate || !endDate || startDate > endDate) {
+        alert('Bitte gültige Datumswerte eingeben');
+        return;
+      }
+
+      const slots = [];
+      for (let d = new Date(startDate); d <= endDate; d.setDate(d.getDate() + 1)) {
+        const day = d.getDay(); // 6 = Samstag, 0 = Sonntag
+        if (day === 6 || day === 0) {
+          let hour = 10;
+          while (hour + 1.5 <= 20) { // 90-Minuten Slots
+            const start_time = `${Math.floor(hour).toString().padStart(2,'0')}:${(hour%1===0? '00':'30')}`;
+            const end_hour = hour + 1.5;
+            const end_time = `${Math.floor(end_hour).toString().padStart(2,'0')}:${(end_hour%1===0? '00':'30')}`;
+            slots.push({
+              date: d.toISOString().split('T')[0],
+              start_time,
+              end_time,
+              room: 'Raum 1'
+            });
+            hour += 1.5;
+          }
+        }
+      }
+
+      for (const slot of slots) {
+        await fetch(`${BACKEND_BASE}/manual-slots`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-ADMIN-PASS': ADMIN_PASS
+          },
+          body: JSON.stringify(slot)
+        });
+      }
+
+      alert(`${slots.length} Slots hinzugefügt!`);
+      loadSlots();
+    });
+  </script>
+</body>
+</html>

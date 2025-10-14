@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Escape Room Buchung</title>
+  <style>
+    body{font-family:sans-serif;margin:0;padding:0;background:#f7f9fc;color:#111}
+    .container{max-width:800px;margin:28px auto;padding:20px}
+    h1,h2{margin:0 0 12px 0}
+    label{display:block;margin-top:12px;font-weight:bold}
+    input,select,button{padding:8px;width:100%;margin-top:4px;border-radius:6px;border:1px solid #ccc}
+    .slots{margin-top:8px;display:flex;flex-wrap:wrap;gap:6px}
+    .slot{padding:6px 8px;border:1px solid #ccc;border-radius:6px;cursor:pointer}
+    .slot.booked{opacity:0.5;text-decoration:line-through;cursor:not-allowed}
+    .slot.selected{background:#2563eb;color:#fff;border-color:#2563eb}
+    .actions{margin-top:12px}
+    button{cursor:pointer;background:#2563eb;color:#fff;border:none}
+    ul.bookings{list-style:none;padding:0;margin:12px 0;max-height:300px;overflow:auto}
+    ul.bookings li{padding:8px;border-bottom:1px dashed #ddd;font-size:14px}
+  </style>
+</head>
+<body>
+<div class="container">
+  <h1>Escape Room Buchung</h1>
+
+  <label for="room">Raum</label>
+  <select id="room">
+    <option value="Raum A">Raum A</option>
+    <option value="Raum B">Raum B</option>
+    <option value="Raum C">Raum C</option>
+  </select>
+
+  <label for="date">Datum</label>
+  <input type="date" id="date" />
+
+  <label>Verfügbare Slots</label>
+  <div class="slots" id="slots"></div>
+  <p id="slotsHint"></p>
+
+  <label for="name">Name</label>
+  <input id="name" type="text" placeholder="Max Mustermann" />
+
+  <label for="email">E-Mail</label>
+  <input id="email" type="email" placeholder="name@beispiel.de" />
+
+  <label for="phone">Telefon</label>
+  <input id="phone" type="tel" placeholder="0171 1234567" />
+
+  <div class="actions">
+    <button id="bookBtn">Buchen</button>
+  </div>
+
+  <h2>Alle Buchungen</h2>
+  <ul id="bookingList" class="bookings"></ul>
+</div>
+
+<script>
+  const BACKEND_BASE = 'https://escape-room-backend-gkmc.onrender.com'; // Render URL
+  const roomSelect = document.getElementById('room');
+  const dateInput = document.getElementById('date');
+  const slotsWrap = document.getElementById('slots');
+  const slotsHint = document.getElementById('slotsHint');
+  const nameInput = document.getElementById('name');
+  const emailInput = document.getElementById('email');
+  const phoneInput = document.getElementById('phone');
+  const bookBtn = document.getElementById('bookBtn');
+  const bookingList = document.getElementById('bookingList');
+
+  let selectedSlot = null;
+
+  // Set today as default date
+  const today = new Date();
+  dateInput.value = today.toISOString().split('T')[0];
+
+  async function fetchSlots(room, date) {
+    const res = await fetch(`${BACKEND_BASE}/slots?room=${room}&date=${date}`);
+    if(!res.ok) return [];
+    return await res.json(); // Array {start_time, booked}
+  }
+
+  async function fetchBookings() {
+    const res = await fetch(`${BACKEND_BASE}/manual-slots`);
+    if(!res.ok) return [];
+    return await res.json();
+  }
+
+  async function renderSlotsFor(room, date) {
+    selectedSlot = null;
+    slotsWrap.innerHTML = '';
+    const slots = await fetchSlots(room,date);
+    if(slots.length === 0) { slotsHint.textContent = 'Keine Slots verfügbar'; return; }
+    slots.forEach(slot => {
+      const el = document.createElement('button');
+      el.type='button'; el.className='slot'; el.textContent = slot.start_time;
+      if(slot.booked) { el.classList.add('booked'); el.disabled=true; }
+      el.addEventListener('click', ()=> {
+        document.querySelectorAll('.slot').forEach(s=>s.classList.remove('selected'));
+        el.classList.add('selected'); selectedSlot = slot.start_time;
+      });
+      slotsWrap.appendChild(el);
+    });
+    const freeCount = slots.filter(s=>!s.booked).length;
+    slotsHint.textContent = `${freeCount} freie Slots für ${date}`;
+  }
+
+  async function renderBookings() {
+    const bookings = await fetchBookings();
+    bookingList.innerHTML = '';
+    bookings.forEach(b=>{
+      const li = document.createElement('li');
+      li.textContent = `${b.room} – ${b.start_time} am ${b.date} (${b.name})`;
+      bookingList.appendChild(li);
+    });
+  }
+
+  async function handleBook() {
+    if(!selectedSlot) return alert('Bitte Slot wählen');
+    const payload = {
+      room: roomSelect.value,
+      date: dateInput.value,
+      start_time: selectedSlot,
+      end_time: computeEndTime(selectedSlot),
+      name: nameInput.value,
+      email: emailInput.value,
+      phone: phoneInput.value
+    };
+    const res = await fetch(`${BACKEND_BASE}/bookings`, {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(payload)
+    });
+    if(res.ok){
+      alert('Buchung erfolgreich!');
+      renderSlotsFor(roomSelect.value, dateInput.value);
+      renderBookings();
+    } else {
+      const err = await res.json();
+      alert('Fehler: ' + (err.error || 'Unbekannt'));
+    }
+  }
+
+  function computeEndTime(startTime){
+    const [h,m] = startTime.split(':').map(Number);
+    const end = new Date();
+    end.setHours(h,m+60); // 60 Minuten Spielzeit, 90 Minuten Puffer möglich im Backend
+    return `${end.getHours().toString().padStart(2,'0')}:${end.getMinutes().toString().padStart(2,'0')}`;
+  }
+
+  roomSelect.addEventListener('change', ()=>renderSlotsFor(roomSelect.value, dateInput.value));
+  dateInput.addEventListener('change', ()=>renderSlotsFor(roomSelect.value, dateInput.value));
+  bookBtn.addEventListener('click', handleBook);
+
+  // Initial render
+  renderSlotsFor(roomSelect.value, dateInput.value);
+  renderBookings();
+</script>
+</body>
+</html>

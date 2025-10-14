@@ -2,76 +2,95 @@
 const express = require('express');
 const cors = require('cors');
 const sqlite3 = require('sqlite3').verbose();
-require('dotenv').config();
+const bodyParser = require('body-parser');
 
 const app = express();
-app.use(cors());
-app.use(express.json());
-
-// Render-kompatibler Port
 const PORT = process.env.PORT || 3000;
 
-// Admin-Passwort aus Environment Variable
-const ADMIN_PASS = process.env.ADMIN_PASS || 'testpass';
+// Middleware
+app.use(cors());
+app.use(bodyParser.json());
 
-// SQLite-Datenbank öffnen oder erstellen
+// SQLite-Datenbank öffnen (erstellt Datei, falls nicht vorhanden)
 const db = new sqlite3.Database('escape.db', (err) => {
-  if (err) {
-    console.error('Fehler beim Öffnen der Datenbank:', err.message);
-  } else {
-    console.log('Datenbank erfolgreich geöffnet.');
-  }
+  if (err) console.error('Datenbankfehler:', err.message);
+  else console.log('Datenbank geöffnet.');
 });
 
-// Tabelle erstellen, falls nicht vorhanden
-db.run(`
-  CREATE TABLE IF NOT EXISTS manual_slots (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    date TEXT NOT NULL,
-    start_time TEXT NOT NULL,
-    end_time TEXT NOT NULL,
-    room TEXT NOT NULL
-  )
-`);
+// Tabelle für Slots erstellen, falls nicht vorhanden
+db.run(`CREATE TABLE IF NOT EXISTS manual_slots (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  room TEXT NOT NULL,
+  date TEXT NOT NULL,
+  start_time TEXT NOT NULL,
+  duration_min INTEGER NOT NULL,
+  booked INTEGER DEFAULT 0
+)`);
 
-// Middleware: Admin-Check
-function checkAdmin(req, res, next) {
-  const pass = req.header('X-ADMIN-PASS');
-  if (pass !== ADMIN_PASS) {
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
-  next();
-}
+// Tabelle für Buchungen erstellen, falls nicht vorhanden
+db.run(`CREATE TABLE IF NOT EXISTS bookings (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  room TEXT NOT NULL,
+  date TEXT NOT NULL,
+  start_time TEXT NOT NULL,
+  end_time TEXT NOT NULL,
+  name TEXT NOT NULL,
+  email TEXT NOT NULL,
+  phone TEXT,
+  persons INTEGER DEFAULT 1,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+)`);
 
-// GET /manual-slots → alle Slots
-app.get('/manual-slots', checkAdmin, (req, res) => {
-  db.all('SELECT * FROM manual_slots', [], (err, rows) => {
-    if (err) return res.status(500).json({ error: err.message });
-    res.json(rows);
-  });
+// ----------- Endpoint: Slots abrufen -----------
+app.get('/slots', (req, res) => {
+  const { room, date } = req.query;
+  if (!room || !date) return res.status(400).json({ error: 'room und date nötig' });
+
+  db.all(
+    `SELECT id, start_time as start, duration_min, booked
+     FROM manual_slots
+     WHERE room = ? AND date = ?`,
+    [room, date],
+    (err, rows) => {
+      if (err) return res.status(500).json({ error: err.message });
+      res.json({ slots: rows });
+    }
+  );
 });
 
-// POST /manual-slots → neuen Slot hinzufügen
-app.post('/manual-slots', checkAdmin, (req, res) => {
-  const { date, start_time, end_time, room } = req.body;
-  if (!date || !start_time || !end_time || !room) {
-    return res.status(400).json({ error: 'Missing required fields' });
+// ----------- Endpoint: Buchung anlegen -----------
+app.post('/bookings', (req, res) => {
+  const { room, date, start_time, end_time, name, email, phone, persons } = req.body;
+  if (!room || !date || !start_time || !end_time || !name || !email) {
+    return res.status(400).json({ error: 'Fehlende Buchungsinformationen' });
   }
-  const stmt = db.prepare('INSERT INTO manual_slots (date, start_time, end_time, room) VALUES (?, ?, ?, ?)');
-  stmt.run(date, start_time, end_time, room, function(err) {
-    if (err) return res.status(500).json({ error: err.message });
-    res.json({ id: this.lastID, date, start_time, end_time, room });
-  });
-  stmt.finalize();
+
+  // Slot als gebucht markieren
+  db.run(
+    `UPDATE manual_slots SET booked = 1 WHERE room = ? AND date = ? AND start_time = ?`,
+    [room, date, start_time],
+    (err) => {
+      if (err) return res.status(500).json({ error: err.message });
+
+      // Buchung in Tabelle speichern
+      db.run(
+        `INSERT INTO bookings (room,date,start_time,end_time,name,email,phone,persons)
+         VALUES (?,?,?,?,?,?,?,?)`,
+        [room, date, start_time, end_time, name, email, phone, persons],
+        function(err2){
+          if(err2) return res.status(500).json({ error: err2.message });
+          res.json({ success: true, booking_id: this.lastID });
+        }
+      );
+    }
+  );
 });
 
-// DELETE /manual-slots/:id → Slot löschen
-app.delete('/manual-slots/:id', checkAdmin, (req, res) => {
-  const id = req.params.id;
-  db.run('DELETE FROM manual_slots WHERE id = ?', [id], function(err) {
-    if (err) return res.status(500).json({ error: err.message });
-    if (this.changes === 0) return res.status(404).json({ error: 'Slot not found' });
-    res.json({ message: 'Slot deleted', id });
+// ----------- Optional: Alle Buchungen abrufen -----------
+app.get('/bookings', (req,res)=>{
+  db.all(`SELECT * FROM bookings ORDER BY date,start_time`, (err, rows)=>{
+    if(err) return res.status(500).json({ error: err.message });
+    res.json({ bookings: rows });
   });
 });
 
