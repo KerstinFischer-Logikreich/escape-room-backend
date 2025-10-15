@@ -18,7 +18,7 @@ const auth = new google.auth.GoogleAuth({
 
 async function addBookingToCalendar({ room, start_time, end_time, name, email }) {
   const authClient = await auth.getClient();
-  const calendarId = 'escaperoomcalender@escaperoombooking.iam.gserviceaccount.com'; // unbedingt ersetzen
+  const calendarId = '9eeb1efbc33abe73685005c078fef7989d322dee03ac26cd5be30815ea330dd3@group.calendar.google.com'; // unbedingt ersetzen
 
   const event = {
     summary: `Escape Room: ${room}`,
