@@ -151,6 +151,14 @@ app.post('/bookings', (req, res) => {
   );
 });
 
+try {
+  const result = await addBookingToCalendar({ room, start_time, end_time, name, email });
+  console.log('Kalender-Eintrag erstellt:', result.data.htmlLink);
+} catch (err) {
+  console.error('Fehler beim Kalender-Import:', err);
+}
+
+
 
 // ----------- Optional: Alle Buchungen abrufen -----------
 app.get('/bookings', (req,res)=>{
